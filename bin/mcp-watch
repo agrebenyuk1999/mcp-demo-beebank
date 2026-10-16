@@ -1,0 +1,225 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+// Живий перегляд var/mcp-requests.log: що надсилає MCP-клієнт і що відповідає сервер.
+// make watch             — лише нові запити
+// make watch ARGS=--all  — з початку логу
+// make watch ARGS=--full — без скорочень і з _meta
+
+$path = dirname(__DIR__).'/var/mcp-requests.log';
+$all = in_array('--all', $argv, true);
+$full = in_array('--full', $argv, true);
+
+const RESET = "\e[0m", BOLD = "\e[1m", DIM = "\e[2m", RED = "\e[31m", GREEN = "\e[32m",
+    YELLOW = "\e[33m", BLUE = "\e[38;5;117m", MAGENTA = "\e[38;5;213m", CYAN = "\e[36m";
+const META = 'io.modelcontextprotocol/';
+
+function strip(mixed $v): mixed
+{
+    global $full;
+    if ($full || !$v instanceof stdClass) {
+        return $v;
+    }
+    $v = clone $v;
+    foreach (['_meta', 'ttlMs', 'cacheScope', 'resultType'] as $k) {
+        unset($v->$k);
+    }
+
+    return $v;
+}
+
+function pretty(mixed $value, int $maxLines = 18): string
+{
+    global $full;
+    $json = is_string($value) ? $value : json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $lines = explode("\n", $json);
+    if (!$full && count($lines) > $maxLines) {
+        $more = count($lines) - $maxLines;
+        $lines = array_slice($lines, 0, $maxLines);
+        $lines[] = DIM."… ще {$more} рядків (make watch ARGS=--full)".RESET;
+    }
+
+    return implode("\n", array_map(static fn (string $l): string => '    '.$l, $lines))."\n";
+}
+
+function oneLine(mixed $value): string
+{
+    return json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
+function showRequest(stdClass $e): void
+{
+    $body = $e->body;
+    $meta = $body->params->_meta ?? null;
+    $version = $meta?->{META.'protocolVersion'} ?? null;
+    echo "\n".DIM.$e->ts.RESET.'  '.BOLD.$e->http.RESET.'  '.CYAN.($e->client ? strtok($e->client, ' ') : 'невідомий клієнт').RESET
+        .($version ? DIM."  MCP {$version}".RESET : '')
+        .($e->session ? DIM.'  сесія '.substr($e->session, 0, 8).'…'.RESET : '')
+        .DIM."  #{$e->rid}".RESET."\n";
+
+    if ('DELETE' === $e->http) {
+        echo '  '.BLUE.'→ закрити сесію'.RESET."\n";
+
+        return;
+    }
+    if (!$body instanceof stdClass) {
+        return;
+    }
+    if (!isset($body->method)) {
+        if (isset($body->result) || isset($body->error)) {
+            echo '  '.MAGENTA.'→ відповідь клієнта на запит сервера'.RESET."\n".pretty($body->result ?? $body->error);
+        } else {
+            echo pretty($body);
+        }
+
+        return;
+    }
+
+    $params = strip($body->params ?? null);
+    $id = isset($body->id) ? DIM." id {$body->id}".RESET : DIM.' нотифікація'.RESET;
+
+    if ('tools/call' === $body->method) {
+        $retry = isset($params->inputResponses);
+        echo '  '.BLUE.($retry ? '↻ tools/call (повтор з відповіддю людини) ' : '→ tools/call ').BOLD.YELLOW.$params->name.RESET.$id."\n";
+        echo pretty($params->arguments ?? new stdClass());
+        if ($retry) {
+            echo '    '.MAGENTA.'inputResponses: '.oneLine($params->inputResponses).RESET."\n";
+        }
+
+        return;
+    }
+
+    echo '  '.BLUE.'→ '.$body->method.RESET.$id."\n";
+    if ('server/discover' === $body->method || 'initialize' === $body->method) {
+        $caps = $meta?->{META.'clientCapabilities'} ?? $body->params->capabilities ?? null;
+        echo '    '.DIM.'можливості клієнта: '.RESET.oneLine($caps)."\n";
+    } elseif ($params && [] !== get_object_vars($params)) {
+        echo pretty($params);
+    }
+}
+
+function showServerAsk(string $method, mixed $params, string $rid): void
+{
+    echo '  '.MAGENTA.BOLD."⇠ сервер просить клієнта: {$method}".RESET.DIM."  #{$rid}".RESET."\n";
+    if (isset($params->message)) {
+        echo '    '.MAGENTA.str_replace("\n", "\n    ", $params->message).RESET."\n";
+    } else {
+        echo pretty($params);
+    }
+}
+
+function showResult(mixed $body, string $head, string $rid): void
+{
+    echo $head."\n";
+    if (!$body instanceof stdClass) {
+        echo pretty($body);
+
+        return;
+    }
+    if (isset($body->error)) {
+        echo '    '.RED.'error '.$body->error->code.': '.$body->error->message.RESET."\n";
+
+        return;
+    }
+    $r = $body->result ?? $body;
+
+    if ('input_required' === ($r->resultType ?? null)) {
+        foreach ($r->inputRequests as $ask) {
+            showServerAsk($ask->method, $ask->params, $rid);
+        }
+
+        return;
+    }
+
+    $r = strip($r);
+    foreach (['tools', 'prompts', 'resources'] as $list) {
+        if (isset($r->$list)) {
+            echo '    '.count($r->$list)." {$list}: ".implode(', ', array_map(static fn ($i) => $i->name ?? $i->uri, $r->$list))."\n";
+
+            return;
+        }
+    }
+    if (isset($r->serverInfo) || isset($r->supportedVersions)) {
+        $info = $r->serverInfo ?? $body->result->_meta->{META.'serverInfo'} ?? null;
+        echo '    сервер: '.oneLine($info)."\n";
+        echo '    версії: '.oneLine($r->supportedVersions ?? $r->protocolVersion)."\n";
+        echo '    можливості: '.oneLine($r->capabilities)."\n";
+    } elseif (isset($r->content)) {
+        if (!empty($r->isError)) {
+            echo '    '.RED.BOLD.'isError: true'.RESET.' '.RED.($r->content[0]->text ?? '').RESET."\n";
+        } else {
+            echo pretty($r->structuredContent ?? implode("\n", array_map(static fn ($c) => $c->text ?? '', $r->content)));
+        }
+    } elseif (isset($r->contents)) {
+        echo pretty($r->contents[0]->text ?? $r->contents);
+    } elseif (isset($r->messages)) {
+        echo pretty($r->messages[0]->content->text ?? $r->messages);
+    } elseif ([] !== get_object_vars($r)) {
+        echo pretty($r);
+    }
+}
+
+function showSse(stdClass $e): void
+{
+    if ($e->body instanceof stdClass && isset($e->body->method)) {
+        showServerAsk($e->body->method, $e->body->params ?? null, $e->rid);
+
+        return;
+    }
+    showResult($e->body, '  '.GREEN.'← SSE'.RESET.DIM."  #{$e->rid}".RESET, $e->rid);
+}
+
+function showResponse(stdClass $e): void
+{
+    $color = $e->status < 300 ? GREEN : RED;
+    $head = '  '.$color."← {$e->status}".RESET.DIM." · {$e->ms} ms  #{$e->rid}".RESET;
+    if ('(SSE)' === $e->body) {
+        echo $head.DIM.'  (потік SSE завершено)'.RESET."\n";
+    } elseif (null === $e->body) {
+        echo $head.DIM.'  (порожнє тіло)'.RESET."\n";
+    } else {
+        showResult($e->body, $head, $e->rid);
+        if ($e->session && isset($e->body->result->serverInfo)) {
+            echo '    '.CYAN.'Mcp-Session-Id: '.$e->session.RESET.DIM.'  ← клієнт додаватиме до кожного запиту'.RESET."\n";
+        }
+    }
+}
+
+if (!file_exists($path)) {
+    touch($path);
+}
+$fh = fopen($path, 'r');
+if (!$all) {
+    fseek($fh, 0, SEEK_END);
+}
+echo BOLD.'🐝 BeeBank MCP — живий журнал запитів'.RESET.DIM.'  (Ctrl+C — вийти)'.RESET."\n";
+
+while (true) {
+    $line = fgets($fh);
+    if (false === $line) {
+        usleep(200_000);
+        clearstatcache();
+        $stat = @stat($path);
+        if (!$stat || $stat['ino'] !== fstat($fh)['ino'] || $stat['size'] < ftell($fh)) {
+            fclose($fh);
+            touch($path);
+            $fh = fopen($path, 'r');
+        } else {
+            // скидаємо прапорець EOF, інакше PHP не побачить нові рядки
+            fseek($fh, ftell($fh));
+        }
+        continue;
+    }
+    $e = json_decode($line);
+    if (!$e instanceof stdClass) {
+        continue;
+    }
+    match ($e->kind) {
+        'request' => showRequest($e),
+        'sse' => showSse($e),
+        'response' => showResponse($e),
+        default => null,
+    };
+}

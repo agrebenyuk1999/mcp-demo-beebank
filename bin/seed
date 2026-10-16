@@ -1,0 +1,52 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use BeeBank\Database;
+
+require dirname(__DIR__).'/vendor/autoload.php';
+
+$pdo = Database::connect();
+Database::reset($pdo);
+
+$hives = [
+    1 => ['Скарби Ющенко', 'Апельсинка'],
+    2 => ['Фабрика Пєті', 'Рошенка'],
+    3 => ['Бджолині Межигірʼя', 'Люда'],
+    4 => ['Офіс Пасічника', 'Картонка'],
+    5 => ['Маткавщина', 'Юлька'],
+];
+$insertHive = $pdo->prepare("INSERT INTO hives (id, name, queen, status) VALUES (?, ?, ?, 'active')");
+foreach ($hives as $id => [$name, $queen]) {
+    $insertHive->execute([$id, $name, $queen]);
+}
+
+$today = new DateTimeImmutable('today');
+$yesterday = $today->modify('-1 day');
+
+// [день, час, тип, from, to, грами, memo]
+$operations = [
+    [$today->modify('-9 days'), '09:10', 'harvest', null, 1, 6200, 'липовий взяток'],
+    [$today->modify('-9 days'), '09:40', 'harvest', null, 2, 4100, 'гречаний взяток'],
+    [$today->modify('-8 days'), '10:05', 'harvest', null, 3, 3800, 'акацієвий взяток'],
+    [$today->modify('-8 days'), '11:20', 'harvest', null, 4, 5300, 'соняшниковий взяток'],
+    [$today->modify('-7 days'), '08:50', 'harvest', null, 5, 2900, 'конюшиновий взяток'],
+    [$today->modify('-5 days'), '14:30', 'transfer', 1, 4, 400, 'за допомогу з роєнням'],
+    [$today->modify('-4 days'), '16:00', 'withdrawal', 2, null, 1000, 'пасічник: на продаж'],
+    [$today->modify('-3 days'), '10:15', 'harvest', null, 1, 2600, 'другий взяток'],
+    [$today->modify('-2 days'), '13:45', 'transfer', 3, 2, 250, 'за пилок'],
+    [$yesterday, '15:20', 'transfer', 5, 2, 2000, 'за вощину'],
+    [$yesterday, '17:05', 'withdrawal', 4, null, 800, 'пасічник: дегустація'],
+    [$today, '08:30', 'harvest', null, 3, 1200, 'ранковий збір'],
+    [$today, '09:15', 'transfer', 2, 1, 300, 'за позичену рамку'],
+    [$today, '09:40', 'transfer', 4, 5, 150, 'З днем народження, Юлько! 🎂'],
+    [$today, '10:05', 'transfer', 5, 2, 20, 'за пилок'],
+    [$today, '10:30', 'withdrawal', 3, null, 500, 'пасічник: на ярмарок'],
+];
+$insertOp = $pdo->prepare('INSERT INTO operations (type, from_hive_id, to_hive_id, grams, memo, created_at) VALUES (?, ?, ?, ?, ?, ?)');
+foreach ($operations as [$day, $time, $type, $from, $to, $grams, $memo]) {
+    $insertOp->execute([$type, $from, $to, $grams, $memo, $day->format('Y-m-d ').$time.':00']);
+}
+
+fwrite(STDOUT, \sprintf("🐝 BeeBank seeded: %d hives, %d operations\n", count($hives), count($operations)));

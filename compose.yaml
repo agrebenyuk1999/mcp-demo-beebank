@@ -1,0 +1,12 @@
+services:
+  app:
+    build: .
+    command: php -S 0.0.0.0:8080 -t public public/router.php
+    environment:
+      # UI опитує сервер щосекунди, а клієнт MCP може слати кілька запитів паралельно
+      PHP_CLI_SERVER_WORKERS: 4
+      BEEBANK_MCP_TOKEN: dev-secret
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app

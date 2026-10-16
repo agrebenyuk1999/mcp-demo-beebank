@@ -1,0 +1,30 @@
+{
+    "name": "sharpminds/beebank",
+    "description": "BeeBank: fintech for an apiary. MCP demo.",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.4",
+        "ext-pdo_sqlite": "*",
+        "mcp/sdk": "^0.8.1",
+        "nyholm/psr7": "^1.8",
+        "nyholm/psr7-server": "^1.1",
+        "symfony/finder": "^8.1"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^12.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "BeeBank\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "BeeBank\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
